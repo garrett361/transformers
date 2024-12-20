@@ -946,7 +946,9 @@ class BambaDecoderLayer(nn.Module):
     def __init__(self, config: BambaConfig, layer_idx: int, layer_type: str = "mamba"):
         super().__init__()
 
-        self.feed_forward = BambaMLP(config)
+        num_experts = 1
+        ffn_layer_class = BambaMLP if num_experts == 1 else None
+        self.feed_forward = ffn_layer_class(config)
         self.input_layernorm = BambaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.pre_ff_layernorm = BambaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
