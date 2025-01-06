@@ -291,6 +291,7 @@ class BambaMixer(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ):
         # 1. Gated MLP's linear projection
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -298,8 +299,10 @@ class BambaMixer(nn.Module):
 
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
-        groups_time_state_size = self.n_groups * self.ssm_state_size
+        if position_ids is not None and batch_size != 1:
+            raise ValueError(f"Batch size of 1 expected when position_ids provided. Received {batch_size=}")
 
+        groups_time_state_size = self.n_groups * self.ssm_state_size
         use_precomputed_states = (
             cache_params is not None
             and cache_params.has_previous_state
@@ -666,14 +669,16 @@ class BambaMixer(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ):
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
             return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask)
+        if position_ids is not None:
+            raise ValueError(f"Non-trivial kwargs only supported on cuda path. User provided {kwargs=}")
         dtype = hidden_states.dtype
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
             hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-
         return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask)
 
 
@@ -750,6 +755,7 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
+                **kwargs,
             )
             self_attn_weights = None
         elif self.layer_type == "attention":
