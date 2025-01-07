@@ -911,7 +911,7 @@ class BambaMixer(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
     ):
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
-            return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask)
+            return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask, position_ids)
         if position_ids is not None:
             raise ValueError("position_ids only supported on cuda path.")
         dtype = hidden_states.dtype
