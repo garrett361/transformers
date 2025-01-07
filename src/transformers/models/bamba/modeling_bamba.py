@@ -1047,6 +1047,7 @@ class BambaDecoderLayer(nn.Module):
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
+                position_ids=position_ids,
                 **kwargs,
             )
             self_attn_weights = None
