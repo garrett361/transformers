@@ -36,10 +36,7 @@ from ...test_pipeline_mixin import PipelineTesterMixin
 if is_torch_available():
     import torch
 
-    from transformers import (
-        BambaForCausalLM,
-        BambaModel,
-    )
+    from transformers import BambaForCausalLM, BambaModel
     from transformers.models.bamba.modeling_bamba import (
         HybridMambaAttentionDynamicCache,
     )
@@ -601,3 +598,24 @@ class BambaModelIntegrationTest(unittest.TestCase):
 
             torch.testing.assert_close(logits[0, -1, :40].cpu(), EXPECTED_LOGITS_NO_GRAD_0, rtol=1e-3, atol=1)
             torch.testing.assert_close(logits[1, -1, :40].cpu(), EXPECTED_LOGITS_NO_GRAD_1, rtol=1e-3, atol=1)
+
+
+class TestBambaMixer:
+    def test_seq_idx_from_position_ids(self) -> None:
+        from transformers.models.bamba.modular_bamba import BambaMixer
+
+        cfg = BambaConfig(batch_size=1, seq_length=256)
+        torch.manual_seed(42)
+        model = BambaMixer(cfg, layer_idx=0)
+
+        num_seqs = 4
+        seq_lens = torch.randint(1, 64, (num_seqs,))
+        pos_ids = torch.cat([torch.arange(sl) for sl in seq_lens])[None]
+
+        seq_idx = model._get_seq_idx_from_position_ids(pos_ids)
+
+        start_idx = 0
+        for seq_num, end_idx in enumerate(seq_lens):
+            seq_idx_slice = seq_idx[:, start_idx:end_idx]
+            assert torch.allclose(seq_idx_slice, torch.full_like(seq_idx_slice, seq_num))
+            start_idx += end_idx
