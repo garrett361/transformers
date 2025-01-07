@@ -297,11 +297,6 @@ class BambaMixer(nn.Module):
 
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
-        # if position_ids is not None and batch_size != 1:
-        #     # TODO: @goon - Verify this is an actual restriction? Thought it was; not sure now.
-        #     # It's required if we pass cu_seqlens, at least.
-        #     # ttps://github.com/state-spaces/mamba/blob/95d8aba8a8c75aedcaa6143713b11e745e7cd0d9/mamba_ssm/ops/triton/ssd_combined.py?plain=1#L328
-        #     raise ValueError(f"Batch size of 1 expected when position_ids provided. Received {batch_size=}")
 
         groups_time_state_size = self.n_groups * self.ssm_state_size
         use_precomputed_states = (
