@@ -604,18 +604,45 @@ class TestBambaMixer:
     def test_seq_idx_from_position_ids(self) -> None:
         from transformers.models.bamba.modular_bamba import BambaMixer
 
-        cfg = BambaConfig(batch_size=1, seq_length=256)
+        seq_length = 256
+        chunks_per_batch = 4
+        batch_size = 2
+
+        cfg = BambaConfig(batch_size=1, seq_length=seq_length)
         torch.manual_seed(42)
         model = BambaMixer(cfg, layer_idx=0)
 
-        num_seqs = 4
-        seq_lens = torch.randint(1, 64, (num_seqs,))
-        pos_ids = torch.cat([torch.arange(sl) for sl in seq_lens])[None]
+        eos_idxs = (
+            torch.stack([torch.randperm(seq_length) for _ in range(batch_size)], dim=0)[:, : chunks_per_batch - 1]
+            .sort(dim=-1)
+            .values
+        )
+        seq_lens = torch.cat(
+            (torch.full((batch_size, 1), -1), eos_idxs, torch.full((batch_size, 1), seq_length)), dim=-1
+        ).diff(dim=-1)
 
-        seq_idx = model._get_seq_idx_from_position_ids(pos_ids)
+        pos_ids = torch.stack(
+            [
+                torch.cat(
+                    [torch.arange(s, dtype=torch.int32) for s in sl],
+                    dim=0,
+                )
+                for sl in seq_lens
+            ],
+            dim=0,
+        )
 
-        start_idx = 0
-        for seq_num, end_idx in enumerate(seq_lens):
-            seq_idx_slice = seq_idx[:, start_idx:end_idx]
-            assert torch.allclose(seq_idx_slice, torch.full_like(seq_idx_slice, seq_num))
-            start_idx += end_idx
+        seq_idx = torch.stack(
+            [
+                torch.cat(
+                    [torch.full((s,), i, dtype=torch.int32) for i, s in enumerate(sl)],
+                    dim=0,
+                )
+                for sl in seq_lens
+            ],
+            dim=0,
+        )
+
+        seq_idx_pred = model._get_seq_idx_from_position_ids(pos_ids)
+
+        assert torch.allclose(seq_idx_pred, seq_idx)
