@@ -520,6 +520,7 @@ class BambaMixer(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ):
         # 1. Gated MLP's linear projection
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -527,8 +528,13 @@ class BambaMixer(nn.Module):
 
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
-        groups_time_state_size = self.n_groups * self.ssm_state_size
+        if position_ids is not None and batch_size != 1:
+            # TODO: @goon - Verify this is an actual restriction? Thought it was; not sure now.
+            # It's required if we pass cu_seqlens, at least.
+            # ttps://github.com/state-spaces/mamba/blob/95d8aba8a8c75aedcaa6143713b11e745e7cd0d9/mamba_ssm/ops/triton/ssd_combined.py?plain=1#L328
+            raise ValueError(f"Batch size of 1 expected when position_ids provided. Received {batch_size=}")
 
+        groups_time_state_size = self.n_groups * self.ssm_state_size
         use_precomputed_states = (
             cache_params is not None
             and cache_params.has_previous_state
@@ -593,7 +599,7 @@ class BambaMixer(nn.Module):
             dt_limit_kwargs = {} if self.time_step_limit == (0.0, float("inf")) else {"dt_limit": self.time_step_limit}
 
             # 2-4. Fused kernel for conv1d, SSM, and the final projection
-            if self.training and cache_params is None:
+            if self.training and cache_params is None and position_ids is None:
                 out = mamba_split_conv1d_scan_combined(
                     projected_states,
                     self.conv1d.weight.squeeze(1),
@@ -620,6 +626,11 @@ class BambaMixer(nn.Module):
                     [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
                 )
 
+                if position_ids is not None:
+                    seq_idx = self._get_seq_idx_from_position_ids(position_ids)
+                else:
+                    seq_idx = None
+
                 # 2. Convolution sequence transformation
                 # Init cache
                 if cache_params is not None:
@@ -643,8 +654,10 @@ class BambaMixer(nn.Module):
                         weight=self.conv1d.weight.squeeze(1),
                         bias=self.conv1d.bias,
                         activation=self.activation,
+                        seq_idx=seq_idx,
                     ).transpose(1, 2)
 
+                # TODO: @goon - figure out if mask needs changing?
                 hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
                 hidden_states, B, C = torch.split(
                     hidden_states_B_C,
@@ -662,10 +675,10 @@ class BambaMixer(nn.Module):
                     chunk_size=self.chunk_size,
                     D=self.D,
                     z=None,
-                    seq_idx=None,
                     return_final_states=True,
                     dt_bias=self.dt_bias,
                     dt_softplus=True,
+                    seq_idx=seq_idx,
                     **dt_limit_kwargs,
                 )
 
@@ -895,15 +908,42 @@ class BambaMixer(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ):
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
             return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask)
+        if position_ids is not None:
+            raise ValueError("position_ids only supported on cuda path.")
         dtype = hidden_states.dtype
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
             hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-
         return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask)
+
+    def _get_seq_idx_from_position_ids(self, position_ids: torch.LongTensor = None) -> torch.Tensor:
+        batch_size = position_ids.shape[0]
+        device = position_ids.device
+        pos_ids_flat = position_ids.flatten()
+        idxs = torch.arange(pos_ids_flat.numel(), device=device, dtype=torch.int32)
+
+        cu_seq_lens = torch.cat(
+            (
+                idxs[pos_ids_flat == 0],
+                torch.tensor(pos_ids_flat.size(), device=device, dtype=torch.int32),
+            )
+        )
+        seq_lens = torch.diff(cu_seq_lens)
+        seq_idx = torch.stack(
+            [
+                torch.cat(
+                    [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
+                    dim=0,
+                )
+            ],
+            dim=0,
+        )
+
+        return seq_idx
 
 
 class BambaMLP(nn.Module):
@@ -946,6 +986,8 @@ class BambaDecoderLayer(nn.Module):
     def __init__(self, config: BambaConfig, layer_idx: int, layer_type: str = "mamba"):
         super().__init__()
 
+        # The `num_experts` code below is redundant, but it prevents modular_model_converter.py from
+        # generating an unwanted BambaSparseMoeBlock in modeling_bamba.py
         num_experts = 1
         ffn_layer_class = BambaMLP if num_experts == 1 else None
         self.feed_forward = ffn_layer_class(config)
@@ -1005,6 +1047,7 @@ class BambaDecoderLayer(nn.Module):
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
+                **kwargs,
             )
             self_attn_weights = None
         elif self.layer_type == "attention":
