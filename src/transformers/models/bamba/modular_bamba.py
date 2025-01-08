@@ -297,8 +297,8 @@ class BambaMixer(nn.Module):
 
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
-
         groups_time_state_size = self.n_groups * self.ssm_state_size
+
         use_precomputed_states = (
             cache_params is not None
             and cache_params.has_previous_state
