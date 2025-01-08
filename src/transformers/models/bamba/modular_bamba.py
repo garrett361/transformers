@@ -201,6 +201,34 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
     return hidden_states
 
 
+def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
+    batch_size = position_ids.shape[0]
+    device = position_ids.device
+
+    seq_idx_list = []
+    for pos_ids_batch in position_ids:
+        idxs = torch.arange(pos_ids_batch.numel(), device=device, dtype=torch.int32)
+        cu_seq_lens = torch.cat(
+            (
+                idxs[pos_ids_batch == 0],
+                torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
+            ),
+        )
+        seq_lens = cu_seq_lens.diff(dim=-1)
+        seq_idx = torch.stack(
+            [
+                torch.cat(
+                    [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
+                    dim=0,
+                )
+            ],
+            dim=0,
+        )
+        seq_idx_list.append(seq_idx)
+    seq_idx = torch.cat(seq_idx_list, dim=0)
+    return seq_idx
+
+
 # Adapted from transformers.models.mamba2.modeling_mamba2.Mamba2Mixer
 class BambaMixer(nn.Module):
     """
@@ -391,7 +419,7 @@ class BambaMixer(nn.Module):
                 )
 
                 if position_ids is not None:
-                    seq_idx = self._get_seq_idx_from_position_ids(position_ids)
+                    seq_idx = get_seq_idx_from_position_ids(position_ids)
                 else:
                     seq_idx = None
 
@@ -683,34 +711,6 @@ class BambaMixer(nn.Module):
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
             hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
         return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask)
-
-    def _get_seq_idx_from_position_ids(self, position_ids: torch.LongTensor) -> torch.Tensor:
-        batch_size = position_ids.shape[0]
-        device = position_ids.device
-
-        # TODO: @goon - avoid for loop
-        seq_idx_list = []
-        for pos_ids_batch in position_ids:
-            idxs = torch.arange(pos_ids_batch.numel(), device=device, dtype=torch.int32)
-            cu_seq_lens = torch.cat(
-                (
-                    idxs[pos_ids_batch == 0],
-                    torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
-                ),
-            )
-            seq_lens = cu_seq_lens.diff(dim=-1)
-            seq_idx = torch.stack(
-                [
-                    torch.cat(
-                        [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
-                        dim=0,
-                    )
-                ],
-                dim=0,
-            )
-            seq_idx_list.append(seq_idx)
-        seq_idx = torch.cat(seq_idx_list, dim=0)
-        return seq_idx
 
 
 class BambaMLP(LlamaMLP):
