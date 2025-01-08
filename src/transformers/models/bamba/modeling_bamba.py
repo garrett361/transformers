@@ -522,8 +522,8 @@ class BambaMixer(nn.Module):
 
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
-
         groups_time_state_size = self.n_groups * self.ssm_state_size
+
         use_precomputed_states = (
             cache_params is not None
             and cache_params.has_previous_state
@@ -588,7 +588,7 @@ class BambaMixer(nn.Module):
             dt_limit_kwargs = {} if self.time_step_limit == (0.0, float("inf")) else {"dt_limit": self.time_step_limit}
 
             # 2-4. Fused kernel for conv1d, SSM, and the final projection
-            if self.training and cache_params is None and position_ids is None:
+            if self.training and cache_params is None:
                 out = mamba_split_conv1d_scan_combined(
                     projected_states,
                     self.conv1d.weight.squeeze(1),
