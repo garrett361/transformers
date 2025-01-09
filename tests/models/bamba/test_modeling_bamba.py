@@ -21,6 +21,7 @@ import pytest
 from parameterized import parameterized
 
 from transformers import AutoTokenizer, BambaConfig, is_torch_available
+from transformers.models.bamba.modular_bamba import get_seq_idx_from_position_ids
 from transformers.testing_utils import (
     require_torch,
     slow,
@@ -600,49 +601,43 @@ class BambaModelIntegrationTest(unittest.TestCase):
             torch.testing.assert_close(logits[1, -1, :40].cpu(), EXPECTED_LOGITS_NO_GRAD_1, rtol=1e-3, atol=1)
 
 
-class TestBambaMixer:
-    def test_seq_idx_from_position_ids(self) -> None:
-        from transformers.models.bamba.modular_bamba import BambaMixer
+def test_seq_idx_from_position_ids() -> None:
 
-        seq_length = 256
-        chunks_per_batch = 4
-        batch_size = 2
+    seq_length = 256
+    chunks_per_batch = 4
+    batch_size = 2
 
-        cfg = BambaConfig(batch_size=1, seq_length=seq_length)
-        torch.manual_seed(42)
-        model = BambaMixer(cfg, layer_idx=0)
+    eos_idxs = (
+        torch.stack([torch.randperm(seq_length) for _ in range(batch_size)], dim=0)[:, : chunks_per_batch - 1]
+        .sort(dim=-1)
+        .values
+    )
+    seq_lens = torch.cat(
+        (torch.full((batch_size, 1), -1), eos_idxs, torch.full((batch_size, 1), seq_length)), dim=-1
+    ).diff(dim=-1)
 
-        eos_idxs = (
-            torch.stack([torch.randperm(seq_length) for _ in range(batch_size)], dim=0)[:, : chunks_per_batch - 1]
-            .sort(dim=-1)
-            .values
-        )
-        seq_lens = torch.cat(
-            (torch.full((batch_size, 1), -1), eos_idxs, torch.full((batch_size, 1), seq_length)), dim=-1
-        ).diff(dim=-1)
+    pos_ids = torch.stack(
+        [
+            torch.cat(
+                [torch.arange(s, dtype=torch.int32) for s in sl],
+                dim=0,
+            )
+            for sl in seq_lens
+        ],
+        dim=0,
+    )
 
-        pos_ids = torch.stack(
-            [
-                torch.cat(
-                    [torch.arange(s, dtype=torch.int32) for s in sl],
-                    dim=0,
-                )
-                for sl in seq_lens
-            ],
-            dim=0,
-        )
+    seq_idx = torch.stack(
+        [
+            torch.cat(
+                [torch.full((s,), i, dtype=torch.int32) for i, s in enumerate(sl)],
+                dim=0,
+            )
+            for sl in seq_lens
+        ],
+        dim=0,
+    )
 
-        seq_idx = torch.stack(
-            [
-                torch.cat(
-                    [torch.full((s,), i, dtype=torch.int32) for i, s in enumerate(sl)],
-                    dim=0,
-                )
-                for sl in seq_lens
-            ],
-            dim=0,
-        )
+    seq_idx_pred = get_seq_idx_from_position_ids(pos_ids)
 
-        seq_idx_pred = model._get_seq_idx_from_position_ids(pos_ids)
-
-        assert torch.allclose(seq_idx_pred, seq_idx)
+    assert torch.allclose(seq_idx_pred, seq_idx)
