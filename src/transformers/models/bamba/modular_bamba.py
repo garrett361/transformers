@@ -1020,6 +1020,8 @@ class BambaModel(BambaPreTrainedModel):
 
         if cache_position is None:
             cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
@@ -1027,8 +1029,7 @@ class BambaModel(BambaPreTrainedModel):
         mamba_mask = self._update_mamba_mask(attention_mask, cache_position)
 
         # create position embeddings to be shared across the decoder layers
-        rope_pos_ids = cache_position.unsqueeze(0) if position_ids is None else position_ids
-        position_embeddings = self.rotary_emb(hidden_states, position_ids=rope_pos_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
