@@ -542,9 +542,9 @@ class BambaMixer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        use_precomputed_states: bool = False,
     ):
         # 1. Gated MLP's linear projection
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -553,17 +553,6 @@ class BambaMixer(nn.Module):
         # Set up dimensions for reshapes later
         batch_size, seq_len, _ = hidden_states.shape
         groups_time_state_size = self.n_groups * self.ssm_state_size
-
-        use_precomputed_states = (
-            cache_params is not None
-            and cache_params.has_previous_state
-            and seq_len == 1
-            and cache_params.conv_states[self.layer_idx].shape[0]
-            == cache_params.ssm_states[self.layer_idx].shape[0]
-            == batch_size
-            and cache_position is not None
-            and cache_position[0] > 0
-        )
 
         # getting projected states from cache if it exists
         if use_precomputed_states:
@@ -718,8 +707,8 @@ class BambaMixer(nn.Module):
         self,
         input_states,
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        use_precomputed_states: bool = False
     ):
         batch_size, seq_len, _ = input_states.shape
         dtype = input_states.dtype
@@ -731,16 +720,6 @@ class BambaMixer(nn.Module):
                 [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
         )
 
-        use_precomputed_states = (
-            cache_params is not None
-            and cache_params.has_previous_state
-            and seq_len == 1
-            and cache_params.conv_states[self.layer_idx].shape[0]
-            == cache_params.ssm_states[self.layer_idx].shape[0]
-            == batch_size
-            and cache_position is not None
-            and cache_position[0] > 0
-        )
 
         # 2. Convolution sequence transformation
         if use_precomputed_states:
@@ -930,15 +909,28 @@ class BambaMixer(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ):
+        batch_size, seq_len, _ = hidden_states.shape
+        use_precomputed_states = (
+            cache_params is not None
+            and cache_params.has_previous_state
+            and seq_len == 1
+            and cache_params.conv_states[self.layer_idx].shape[0]
+            == cache_params.ssm_states[self.layer_idx].shape[0]
+            == batch_size
+            and cache_position is not None
+            and cache_position[0] > 0
+        )
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
-            return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask, position_ids)
+            return self.cuda_kernels_forward(
+                hidden_states, cache_params, cache_position, attention_mask, position_ids, use_precomputed_states
+            )
         if position_ids is not None:
             raise ValueError("position_ids only supported on cuda path.")
         dtype = hidden_states.dtype
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
             hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-        return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask)
+        return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask, use_precomputed_states)
 
 
 class BambaMLP(nn.Module):
