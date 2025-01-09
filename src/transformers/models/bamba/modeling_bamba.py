@@ -888,7 +888,7 @@ class BambaMixer(nn.Module):
 
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
             return self.cuda_kernels_forward(
-                hidden_states, cache_params, attention_mask, position_ids, use_precomputed_states
+                hidden_states, cache_params, attention_mask, seq_idx, use_precomputed_states
             )
         if seq_idx is not None:
             raise ValueError("Non-trivial seq_idx only supported on cuda path.")
