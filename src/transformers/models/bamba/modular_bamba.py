@@ -753,6 +753,7 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        position_ids_mamba: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -788,7 +789,7 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
+                position_ids=position_ids_mamba,
                 **kwargs,
             )
             self_attn_weights = None
@@ -1017,7 +1018,10 @@ class BambaModel(BambaPreTrainedModel):
                 "Bamba requires an initialized `HybridMambaAttentionDynamicCache` to return a cache. None was "
                 "provided, so no cache will be returned."
             )
-
+        # Passing the possibly-generated position_ids below into mamba would result in unnecessary
+        # computation, so pass the user-supplied (possibly None) position_ids. The BambaAttention
+        # layers ignore this kwarg.
+        position_ids_mamba = position_ids
         if cache_position is None:
             cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
         if position_ids is None:
@@ -1052,6 +1056,7 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
+                    position_ids_mamba,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -1063,6 +1068,7 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    position_ids_mamba=position_ids_mamba,
                 )
 
             hidden_states = layer_outputs[0]

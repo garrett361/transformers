@@ -226,7 +226,7 @@ def eager_attention_forward(
 
 
 # Adapted from transformers.models.glm.modular_glm.apply_rotary_pos_emb
-def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Removes the interleaving of cos and sin from GLM
@@ -236,13 +236,15 @@ def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
         k (`torch.Tensor`): The key tensor.
         cos (`torch.Tensor`): The cosine part of the rotary embedding.
         sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`, *optional*):
+            Deprecated and unused.
         unsqueeze_dim (`int`, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos and
-            sin so that they can be properly broadcasted to the dimensions of q and k. For example,
-            note that cos and sin have the shape [batch_size, seq_len, head_dim]. Then, if q and k
-            have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1
-            makes cos and sin broadcastable to the shapes of q and k. Similarly, if q and k have the
-            shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
@@ -1004,6 +1006,7 @@ class BambaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        position_ids_mamba: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -1039,7 +1042,7 @@ class BambaDecoderLayer(nn.Module):
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
+                position_ids=position_ids_mamba,
                 **kwargs,
             )
             self_attn_weights = None
@@ -1268,9 +1271,14 @@ class BambaModel(BambaPreTrainedModel):
                 "Bamba requires an initialized `HybridMambaAttentionDynamicCache` to return a cache. None was "
                 "provided, so no cache will be returned."
             )
-
+        # Passing the possibly-generated position_ids below into mamba would result in unnecessary
+        # computation, so pass the user-supplied (possibly None) position_ids. The BambaAttention
+        # layers ignore this kwarg.
+        position_ids_mamba = position_ids
         if cache_position is None:
             cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
@@ -1278,8 +1286,7 @@ class BambaModel(BambaPreTrainedModel):
         mamba_mask = self._update_mamba_mask(attention_mask, cache_position)
 
         # create position embeddings to be shared across the decoder layers
-        rope_pos_ids = cache_position.unsqueeze(0) if position_ids is None else position_ids
-        position_embeddings = self.rotary_emb(hidden_states, position_ids=rope_pos_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -1302,6 +1309,7 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
+                    position_ids_mamba,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -1313,6 +1321,7 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    position_ids_mamba=position_ids_mamba,
                 )
 
             hidden_states = layer_outputs[0]
