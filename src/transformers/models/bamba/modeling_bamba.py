@@ -632,7 +632,6 @@ class BambaMixer(nn.Module):
                         seq_idx=seq_idx,
                     ).transpose(1, 2)
 
-                # TODO: @goon - figure out if mask needs changing?
                 hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
                 hidden_states, B, C = torch.split(
                     hidden_states_B_C,
