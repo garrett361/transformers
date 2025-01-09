@@ -697,9 +697,10 @@ class BambaMixer(nn.Module):
             and cache_position is not None
             and cache_position[0] > 0
         )
+
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
             return self.cuda_kernels_forward(
-                hidden_states, cache_params, cache_position, attention_mask, position_ids, use_precomputed_states
+                hidden_states, cache_params, attention_mask, position_ids, use_precomputed_states
             )
         if position_ids is not None:
             raise ValueError("position_ids only supported on cuda path.")
@@ -707,7 +708,7 @@ class BambaMixer(nn.Module):
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
             hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
-        return self.torch_forward(hidden_states, cache_params, cache_position, attention_mask, use_precomputed_states)
+        return self.torch_forward(hidden_states, cache_params, attention_mask, use_precomputed_states)
 
 
 class BambaMLP(LlamaMLP):
