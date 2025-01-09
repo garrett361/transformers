@@ -1018,9 +1018,11 @@ class BambaModel(BambaPreTrainedModel):
                 "Bamba requires an initialized `HybridMambaAttentionDynamicCache` to return a cache. None was "
                 "provided, so no cache will be returned."
             )
-        # Passing the possibly-generated position_ids below into mamba would result in unnecessary
-        # computation, so pass the user-supplied (possibly None) position_ids. The BambaAttention
-        # layers ignore this kwarg.
+
+        # If the user-supplied position_ids are None, it is better to pass position_ids=None into
+        # the mamba kernels than the position_ids generate from cach_position. This avoids
+        # unecessary computation and memory costs. The BambaAttention layers ignore the
+        # position_ids_mamba kwarg.
         position_ids_mamba = position_ids
         if cache_position is None:
             cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
