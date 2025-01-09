@@ -21,7 +21,7 @@ import pytest
 from parameterized import parameterized
 
 from transformers import AutoTokenizer, BambaConfig, is_torch_available
-from transformers.models.bamba.modular_bamba import get_seq_idx_from_position_ids
+from transformers.models.bamba.modular_bamba import get_seq_idx_from_cu_seq_lens, get_seq_idx_from_position_ids
 from transformers.testing_utils import (
     require_torch,
     slow,
@@ -602,11 +602,11 @@ class BambaModelIntegrationTest(unittest.TestCase):
 
 
 def test_seq_idx_from_position_ids() -> None:
-
     seq_length = 256
     chunks_per_batch = 4
     batch_size = 2
 
+    # Split each batch into `chunks_per_batch` sequences.
     eos_idxs = (
         torch.stack([torch.randperm(seq_length) for _ in range(batch_size)], dim=0)[:, : chunks_per_batch - 1]
         .sort(dim=-1)
@@ -616,7 +616,8 @@ def test_seq_idx_from_position_ids() -> None:
         (torch.full((batch_size, 1), -1), eos_idxs, torch.full((batch_size, 1), seq_length)), dim=-1
     ).diff(dim=-1)
 
-    pos_ids = torch.stack(
+    # Create the corresponding position_ids and seq_idx
+    position_ids = torch.stack(
         [
             torch.cat(
                 [torch.arange(s, dtype=torch.int32) for s in sl],
@@ -638,6 +639,16 @@ def test_seq_idx_from_position_ids() -> None:
         dim=0,
     )
 
-    seq_idx_pred = get_seq_idx_from_position_ids(pos_ids)
+    seq_idx_pred = get_seq_idx_from_position_ids(position_ids)
+    assert torch.allclose(seq_idx_pred, seq_idx)
 
+
+def test_seq_idx_from_cu_seq_lens() -> None:
+    n_chunks = 5
+    max_chunk_len = 64
+
+    seq_lens = torch.randint(1, max_chunk_len, size=(n_chunks,))
+    cu_seq_lens = torch.cat([torch.tensor([0]), seq_lens.cumsum(dim=0)])
+    seq_idx = torch.cat([torch.full((n,), idx, dtype=torch.float32) for idx, n in enumerate(seq_lens)])
+    seq_idx_pred = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
     assert torch.allclose(seq_idx_pred, seq_idx)

@@ -428,34 +428,6 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
     return hidden_states
 
 
-def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
-    batch_size = position_ids.shape[0]
-    device = position_ids.device
-
-    seq_idx_list = []
-    for pos_ids_batch in position_ids:
-        idxs = torch.arange(pos_ids_batch.numel(), device=device, dtype=torch.int32)
-        cu_seq_lens = torch.cat(
-            (
-                idxs[pos_ids_batch == 0],
-                torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
-            ),
-        )
-        seq_lens = cu_seq_lens.diff(dim=-1)
-        seq_idx = torch.stack(
-            [
-                torch.cat(
-                    [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
-                    dim=0,
-                )
-            ],
-            dim=0,
-        )
-        seq_idx_list.append(seq_idx)
-    seq_idx = torch.cat(seq_idx_list, dim=0)
-    return seq_idx
-
-
 # Adapted from transformers.models.mamba2.modeling_mamba2.Mamba2Mixer
 class BambaMixer(nn.Module):
     """
@@ -543,7 +515,7 @@ class BambaMixer(nn.Module):
         hidden_states: torch.Tensor,
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        seq_idx: Optional[torch.Tensor] = None,
         use_precomputed_states: bool = False,
     ):
         # 1. Gated MLP's linear projection
@@ -633,11 +605,6 @@ class BambaMixer(nn.Module):
                 gate, hidden_states_B_C, dt = projected_states.split(
                     [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
                 )
-
-                if position_ids is not None:
-                    seq_idx = get_seq_idx_from_position_ids(position_ids)
-                else:
-                    seq_idx = None
 
                 # 2. Convolution sequence transformation
                 # Init cache
@@ -906,8 +873,7 @@ class BambaMixer(nn.Module):
         cache_params: Optional[HybridMambaAttentionDynamicCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
+        seq_idx: Optional[torch.Tensor] = None,
     ):
         batch_size, seq_len, _ = hidden_states.shape
         use_precomputed_states = (
@@ -925,8 +891,8 @@ class BambaMixer(nn.Module):
             return self.cuda_kernels_forward(
                 hidden_states, cache_params, attention_mask, position_ids, use_precomputed_states
             )
-        if position_ids is not None:
-            raise ValueError("position_ids only supported on cuda path.")
+        if seq_idx is not None:
+            raise ValueError("Non-trivial seq_idx only supported on cuda path.")
         dtype = hidden_states.dtype
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
             # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
@@ -968,6 +934,39 @@ class BambaRMSNorm(nn.Module):
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+
+
+def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
+    batch_size = position_ids.shape[0]
+    device = position_ids.device
+
+    seq_idx_list = []
+    for pos_ids_batch in position_ids:
+        idxs = torch.arange(pos_ids_batch.numel(), device=device, dtype=torch.int32)
+        cu_seq_lens = torch.cat(
+            (
+                idxs[pos_ids_batch == 0],
+                torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
+            ),
+        )
+        seq_lens = cu_seq_lens.diff(dim=-1)
+        seq_idx = torch.stack(
+            [
+                torch.cat(
+                    [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
+                    dim=0,
+                )
+            ],
+            dim=0,
+        )
+        seq_idx_list.append(seq_idx)
+    seq_idx = torch.cat(seq_idx_list, dim=0)
+    return seq_idx
+
+
+def get_seq_idx_from_cu_seq_lens(cu_seq_lens: torch.LongTensor) -> torch.Tensor:
+    seq_idx = torch.cat([torch.full((n,), idx, dtype=torch.float32) for idx, n in enumerate(torch.diff(cu_seq_lens))])
+    return seq_idx
 
 
 class BambaDecoderLayer(nn.Module):
@@ -1031,12 +1030,21 @@ class BambaDecoderLayer(nn.Module):
 
         # this is a hybrid decoder layer
         if self.layer_type == "mamba":
+            # Padding-free processing: must handle the cases where the user pass in position_ids,
+            # captured in position_ids_mamba, or FlashAttentionKwargs and convert these to the
+            # seq_idx tensor expected by mamba.
+            if position_ids_mamba is not None:
+                seq_idx = get_seq_idx_from_position_ids(position_ids_mamba)
+            elif "cu_seq_lens_k" in kwargs:
+                seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
+            else:
+                seq_idx = None
             hidden_states = self.mamba(
                 hidden_states=hidden_states,
                 cache_params=past_key_value,
                 cache_position=cache_position,
                 attention_mask=attention_mask,
-                position_ids=position_ids_mamba,
+                seq_idx=seq_idx,
                 **kwargs,
             )
             self_attn_weights = None
@@ -1318,6 +1326,7 @@ class BambaModel(BambaPreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     position_ids_mamba=position_ids_mamba,
+                    **flash_attn_kwargs,
                 )
 
             hidden_states = layer_outputs[0]
