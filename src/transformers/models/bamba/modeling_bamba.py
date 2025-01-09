@@ -1029,8 +1029,8 @@ class BambaDecoderLayer(nn.Module):
 
         # this is a hybrid decoder layer
         if self.layer_type == "mamba":
-            # Padding-free processing: must handle the cases where the user pass in position_ids,
-            # captured in position_ids_mamba, or FlashAttentionKwargs and convert these to the
+            # Padding-free processing: must handle the cases where the user passes in position_ids
+            # (as captured in position_ids_mamba) or FlashAttentionKwargs, and convert these to the
             # seq_idx tensor expected by mamba.
             if position_ids_mamba is not None:
                 seq_idx = get_seq_idx_from_position_ids(position_ids_mamba)
