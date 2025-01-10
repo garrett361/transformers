@@ -700,7 +700,6 @@ class BambaMixer(nn.Module):
             )
         if seq_idx is not None:
             raise ValueError("Non-trivial seq_idx only supported on cuda path.")
-        dtype = hidden_states.dtype
         return self.torch_forward(hidden_states, cache_params, attention_mask, use_precomputed_states)
 
 
