@@ -519,7 +519,6 @@ class BambaMixer(nn.Module):
         use_precomputed_states: bool = False,
     ):
         # 1. Gated MLP's linear projection
-        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         projected_states = self.in_proj(hidden_states)
 
         # Set up dimensions for reshapes later
@@ -680,7 +679,6 @@ class BambaMixer(nn.Module):
         dtype = input_states.dtype
 
         # 1. Gated MLP's linear projection
-        input_states = apply_mask_to_padding_states(input_states, attention_mask)
         projected_states = self.in_proj(input_states)
         gate, hidden_states_B_C, dt = projected_states.split(
                 [self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
@@ -885,7 +883,7 @@ class BambaMixer(nn.Module):
             and cache_position is not None
             and cache_position[0] > 0
         )
-
+        hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
             return self.cuda_kernels_forward(
                 hidden_states, cache_params, attention_mask, seq_idx, use_precomputed_states
@@ -893,9 +891,6 @@ class BambaMixer(nn.Module):
         if seq_idx is not None:
             raise ValueError("Non-trivial seq_idx only supported on cuda path.")
         dtype = hidden_states.dtype
-        if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-            # tune out hidden states for pad tokens, see https://github.com/state-spaces/mamba/issues/66
-            hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
         return self.torch_forward(hidden_states, cache_params, attention_mask, use_precomputed_states)
 
 
