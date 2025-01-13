@@ -781,7 +781,18 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
             if not self.training:
                 seq_idx = None
             elif position_ids is not None:
-                seq_idx = get_seq_idx_from_position_ids(position_ids)
+                # HACK: BambaModel.forward generates position_ids values internally when the
+                # user-provided cache_position = position_ids = None. These are hard-coded to have
+                # batch size 1, which then errors out if the true batch size is different, so we
+                # hackily handle this case below.  An alternative would be to add a new arg which
+                # informs the code here whether the position_ids were provided by the user or if
+                # they were generated.
+                position_ids_batch_size = position_ids.shape[0]
+                true_batch_size = hidden_states.shape[0]
+                if position_ids_batch_size == true_batch_size:
+                    seq_idx = get_seq_idx_from_position_ids(position_ids)
+                else:
+                    seq_idx = None
             elif "cu_seq_lens_k" in kwargs:
                 seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
             else:
