@@ -649,6 +649,8 @@ def test_seq_idx_from_cu_seq_lens() -> None:
 
     seq_lens = torch.randint(1, max_chunk_len, size=(n_chunks,))
     cu_seq_lens = torch.cat([torch.tensor([0]), seq_lens.cumsum(dim=0)])
-    seq_idx = torch.cat([torch.full((n,), idx, dtype=torch.float32) for idx, n in enumerate(seq_lens)])
+    seq_idx = torch.cat(
+        [torch.full((n,), idx, dtype=torch.int32, device=cu_seq_lens.device) for idx, n in enumerate(seq_lens)]
+    )
     seq_idx_pred = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
     assert torch.allclose(seq_idx_pred, seq_idx)
