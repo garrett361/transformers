@@ -206,15 +206,6 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
 
 
 def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
-    # Needs to handle multiple cases. Elements in a batch may look like:
-    #
-    # 1) Packed sequences, which look a bunch of `torch.range`'s concatenated together, as in
-    # [0, 1, 2, 0, 1, 2, 3, ...]. Encountered during training.
-    #
-    # 2) Generation with a cache: position ids can start at arbitrary values, as in [2, 3, 4, ...]
-    #
-    # 3) Left-padded inputs during generation. prepare_inputs_for_generation encodes all masked-out
-    # positions as position_ids = 1, so this scenario presents as [1, 1, 1, 0, 1, 2, 3, ...]
     device = position_ids.device
 
     seq_idx_list = []
