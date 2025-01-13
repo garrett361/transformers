@@ -206,30 +206,35 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
 
 
 def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
-    batch_size = position_ids.shape[0]
+    # Needs to handle multiple cases. Elements in a batch may look like:
+    #
+    # 1) Packed sequences, which look a bunch of `torch.range`'s concatenated together, as in
+    # [0, 1, 2, 0, 1, 2, 3, ...]. Encountered during training.
+    #
+    # 2) Generation with a cache: position ids can start at arbitrary values, as in [2, 3, 4, ...]
+    #
+    # 3) Left-padded inputs during generation. prepare_inputs_for_generation encodes all masked-out
+    # positions as position_ids = 1, so this scenario presents as [1, 1, 1, 0, 1, 2, 3, ...]
     device = position_ids.device
 
     seq_idx_list = []
+    idxs = torch.arange(1, position_ids.shape[1], device=device, dtype=torch.int32)
     for pos_ids_batch in position_ids:
-        idxs = torch.arange(pos_ids_batch.numel(), device=device, dtype=torch.int32)
+        non_increasing_pos_id = pos_ids_batch[1:] <= pos_ids_batch[:-1]
         cu_seq_lens = torch.cat(
             (
-                idxs[pos_ids_batch == 0],
+                torch.tensor([0], device=device, dtype=torch.int32),
+                idxs[non_increasing_pos_id],
                 torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
             ),
         )
         seq_lens = cu_seq_lens.diff(dim=-1)
-        seq_idx = torch.stack(
-            [
-                torch.cat(
-                    [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
-                    dim=0,
-                )
-            ],
+        seq_idx = torch.cat(
+            [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
             dim=0,
         )
         seq_idx_list.append(seq_idx)
-    seq_idx = torch.cat(seq_idx_list, dim=0)
+    seq_idx = torch.stack(seq_idx_list, dim=0)
     return seq_idx
 
 
