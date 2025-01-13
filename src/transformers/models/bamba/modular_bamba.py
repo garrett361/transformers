@@ -228,18 +228,19 @@ def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tenso
                 torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
             ),
         )
-        seq_lens = cu_seq_lens.diff(dim=-1)
-        seq_idx = torch.cat(
-            [torch.full((s,), i, dtype=torch.int32, device=device) for i, s in enumerate(seq_lens)],
-            dim=0,
-        )
+        seq_idx = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
         seq_idx_list.append(seq_idx)
     seq_idx = torch.stack(seq_idx_list, dim=0)
     return seq_idx
 
 
 def get_seq_idx_from_cu_seq_lens(cu_seq_lens: torch.LongTensor) -> torch.Tensor:
-    seq_idx = torch.cat([torch.full((n,), idx, dtype=torch.float32) for idx, n in enumerate(torch.diff(cu_seq_lens))])
+    seq_idx = torch.cat(
+        [
+            torch.full((n,), idx, dtype=torch.int32, device=cu_seq_lens.device)
+            for idx, n in enumerate(torch.diff(cu_seq_lens))
+        ]
+    )
     return seq_idx
 
 
