@@ -747,7 +747,6 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        position_ids_mamba: Optional[torch.Tensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -778,11 +777,12 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
 
         # this is a hybrid decoder layer
         if self.layer_type == "mamba":
-            # Padding-free processing: must handle the cases where the user passes in position_ids
-            # (as captured in position_ids_mamba) or FlashAttentionKwargs, and convert these to the
-            # seq_idx tensor expected by mamba.
-            if position_ids_mamba is not None:
-                seq_idx = get_seq_idx_from_position_ids(position_ids_mamba)
+            # Padding-free processing for efficient training. position_ids are ignored if not
+            # training.
+            if not self.training:
+                seq_idx = None
+            elif position_ids is not None:
+                seq_idx = get_seq_idx_from_position_ids(position_ids)
             elif "cu_seq_lens_k" in kwargs:
                 seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
             else:
@@ -1022,11 +1022,6 @@ class BambaModel(BambaPreTrainedModel):
                 "provided, so no cache will be returned."
             )
 
-        # If the user-supplied position_ids are None, it is better to pass position_ids=None into
-        # the mamba kernels than the position_ids generate from cach_position. This avoids
-        # unecessary computation and memory costs. The BambaAttention layers ignore the
-        # position_ids_mamba kwarg.
-        position_ids_mamba = position_ids
         if cache_position is None:
             cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
         if position_ids is None:
@@ -1061,7 +1056,6 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
-                    position_ids_mamba,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -1073,7 +1067,6 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
-                    position_ids_mamba=position_ids_mamba,
                     **flash_attn_kwargs,
                 )
 
