@@ -1036,6 +1036,11 @@ class BambaDecoderLayer(nn.Module):
                 if position_ids_batch_size == true_batch_size:
                     seq_idx = get_seq_idx_from_position_ids(position_ids)
                 else:
+                    logger.warning_once(
+                        f"Found position_ids with shape {position_ids.shape=} whose batch size does"
+                        f"not match the hidden state batch size {hidden_states.shape=}."
+                        "Ignoring position_ids."
+                    )
                     seq_idx = None
             else:
                 seq_idx = None
