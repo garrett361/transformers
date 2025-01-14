@@ -205,27 +205,24 @@ def apply_mask_to_padding_states(hidden_states, attention_mask):
     return hidden_states
 
 
-def get_seq_idx_from_position_ids(position_ids: torch.LongTensor) -> torch.Tensor:
+def get_cu_seq_lens_from_position_ids(position_ids: torch.LongTensor) -> torch.LongTensor:
+    batch_size = position_ids.shape[0]
+    if batch_size != 1:
+        raise ValueError("Only batch size 1 is supported.")
     device = position_ids.device
-
-    seq_idx_list = []
-    idxs = torch.arange(1, position_ids.shape[1], device=device, dtype=torch.int32)
-    for pos_ids_batch in position_ids:
-        non_increasing_pos_id = pos_ids_batch[1:] <= pos_ids_batch[:-1]
-        cu_seq_lens = torch.cat(
-            (
-                torch.tensor([0], device=device, dtype=torch.int32),
-                idxs[non_increasing_pos_id],
-                torch.tensor(pos_ids_batch.shape, device=device, dtype=torch.int32),
-            ),
-        )
-        seq_idx = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
-        seq_idx_list.append(seq_idx)
-    seq_idx = torch.stack(seq_idx_list, dim=0)
-    return seq_idx
+    idxs = torch.arange(1, position_ids.shape[1], device=device)
+    non_increasing_pos_id = position_ids[0, 1:] <= position_ids[0, :-1]
+    cu_seq_lens = torch.cat(
+        (
+            torch.tensor([0], device=device),
+            idxs[non_increasing_pos_id],
+            torch.tensor(position_ids[0].shape, device=device),
+        ),
+    )
+    return cu_seq_lens
 
 
-def get_seq_idx_from_cu_seq_lens(cu_seq_lens: torch.LongTensor) -> torch.Tensor:
+def get_seq_idx_from_cu_seq_lens(cu_seq_lens: torch.Tensor) -> torch.Tensor:
     seq_idx = torch.cat(
         [
             torch.full((n,), idx, dtype=torch.int32, device=cu_seq_lens.device)
@@ -774,23 +771,13 @@ class BambaDecoderLayer(JambaAttentionDecoderLayer):
             elif "cu_seq_lens_k" in kwargs:
                 seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
             elif position_ids is not None:
-                # HACK: BambaModel.forward generates position_ids values internally when the
-                # user-provided cache_position = position_ids = None. These are hard-coded to have
-                # batch size 1, which then errors out if the true batch size is different, so we
-                # hackily handle this case below.  An alternative would be to add a new arg which
-                # informs the code here whether the position_ids were provided by the user or if
-                # they were generated.
-                position_ids_batch_size = position_ids.shape[0]
-                true_batch_size = hidden_states.shape[0]
-                if position_ids_batch_size == true_batch_size:
-                    seq_idx = get_seq_idx_from_position_ids(position_ids)
-                else:
-                    logger.warning_once(
-                        f"Found position_ids with shape {position_ids.shape=} whose batch size does"
-                        f"not match the hidden state batch size {hidden_states.shape=}."
-                        "Ignoring position_ids."
-                    )
+                cu_seq_lens = get_cu_seq_lens_from_position_ids(position_ids)
+                if len(cu_seq_lens) == 2:
+                    # If cu_seq_lens only has two elements, then it is semantically equivalent to
+                    # `seq_idx=None`, which is more efficient.
                     seq_idx = None
+                else:
+                    seq_idx = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
             else:
                 seq_idx = None
             hidden_states = self.mamba(
