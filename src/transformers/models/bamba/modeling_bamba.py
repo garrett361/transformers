@@ -1022,6 +1022,8 @@ class BambaDecoderLayer(nn.Module):
             # training.
             if not self.training:
                 seq_idx = None
+            elif "cu_seq_lens_k" in kwargs:
+                seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
             elif position_ids is not None:
                 # HACK: BambaModel.forward generates position_ids values internally when the
                 # user-provided cache_position = position_ids = None. These are hard-coded to have
@@ -1035,8 +1037,6 @@ class BambaDecoderLayer(nn.Module):
                     seq_idx = get_seq_idx_from_position_ids(position_ids)
                 else:
                     seq_idx = None
-            elif "cu_seq_lens_k" in kwargs:
-                seq_idx = get_seq_idx_from_cu_seq_lens(kwargs["cu_seq_lens_k"])
             else:
                 seq_idx = None
             hidden_states = self.mamba(
