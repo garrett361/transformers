@@ -1015,8 +1015,8 @@ class BambaDecoderLayer(nn.Module):
 
         # this is a hybrid decoder layer
         if self.layer_type == "mamba":
-            # Padding-free processing for efficient training. position_ids are ignored if not
-            # training.
+            # Padding-free processing for efficient training. position_ids and FlashAttentionKwargs
+            # are ignored by mamba layers if not training.
             if not self.training:
                 seq_idx = None
             elif "cu_seq_lens_k" in kwargs:
