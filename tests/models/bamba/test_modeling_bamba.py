@@ -601,7 +601,7 @@ class BambaModelIntegrationTest(unittest.TestCase):
             torch.testing.assert_close(logits[1, -1, :40].cpu(), EXPECTED_LOGITS_NO_GRAD_1, rtol=1e-3, atol=1)
 
 
-def test_seq_idx_from_position_ids() -> None:
+def test_cu_seq_lens_from_position_ids() -> None:
     seq_length = 256
     chunks_per_batch = 4
     batch_size = 1
@@ -640,11 +640,24 @@ def test_seq_idx_from_position_ids() -> None:
 def test_seq_idx_from_cu_seq_lens() -> None:
     n_chunks = 5
     max_chunk_len = 64
+    batch_size = 1
 
-    seq_lens = torch.randint(1, max_chunk_len, size=(n_chunks,))
-    cu_seq_lens = torch.cat([torch.tensor([0]), seq_lens.cumsum(dim=0)])
+    seq_lens = torch.randint(1, max_chunk_len, size=(batch_size, n_chunks))
+    cu_seq_lens = torch.cat([torch.tensor([[0]]), seq_lens.cumsum(dim=-1)], dim=-1)
     seq_idx = torch.cat(
-        [torch.full((n,), idx, dtype=torch.int32, device=cu_seq_lens.device) for idx, n in enumerate(seq_lens)]
+        [
+            torch.full(
+                (
+                    batch_size,
+                    n,
+                ),
+                idx,
+                dtype=torch.int32,
+                device=cu_seq_lens.device,
+            )
+            for idx, n in enumerate(seq_lens[0])
+        ],
+        dim=-1,
     )
     seq_idx_pred = get_seq_idx_from_cu_seq_lens(cu_seq_lens)
     assert torch.allclose(seq_idx_pred, seq_idx)
