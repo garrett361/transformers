@@ -163,6 +163,7 @@ class BambaModelTester:
             mamba_d_conv=self.mamba_d_conv,
             mamba_expand=self.mamba_expand,
             mamba_chunk_size=self.mamba_chunk_size,
+            mamba_proj_bias=True,  # TODO: @goon - DELETE
         )
 
     def create_and_check_model(
@@ -470,6 +471,13 @@ class BambaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
 
             # no cache as some models require special cache classes to be init outside forward
             model.generation_config.use_cache = False
+
+            # TODO: @goon - DELETE
+            from torch.nn.init import ones_
+
+            for n, param in model.named_parameters():
+                if "in_proj" in n and "bias" in n:
+                    ones_(param)
 
             # Without padding
             model_kwargs = _prepare_model_kwargs(input_ids, attention_mask, signature)
