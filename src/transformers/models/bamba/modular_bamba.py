@@ -1050,11 +1050,6 @@ class BambaModel(BambaPreTrainedModel):
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                if "cu_seq_lens_q" in "flash_attn_kwargs":
-                    raise NotImplementedError(
-                        "Padding-free training with FlashAttentionKwargs and gradient checkpointing"
-                        " not currently supported."
-                    )
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
@@ -1065,6 +1060,7 @@ class BambaModel(BambaPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
+                    **flash_attn_kwargs,
                 )
             else:
                 layer_outputs = decoder_layer(
