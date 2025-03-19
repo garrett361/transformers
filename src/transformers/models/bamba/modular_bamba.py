@@ -406,7 +406,7 @@ class BambaMixer(nn.Module):
                         weight=self.conv1d.weight.squeeze(1),
                         bias=self.conv1d.bias,
                         activation=self.activation,
-                        seq_idx=seq_idx
+                        seq_idx=seq_idx,
                     ).transpose(1, 2)
 
                 hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
@@ -1011,10 +1011,10 @@ class BambaModel(BambaPreTrainedModel):
                 "Either all of (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)"
                 " must be None, or they must all be provided."
             )
-        if flash_attn_kwargs_all_provided and (position_ids is None or seq_idx is None):
+        if flash_attn_kwargs_all_provided and cu_seq_lens_q.numel() > 2 and (position_ids is None or seq_idx is None):
             raise ValueError(
-                "If (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k) are provided,"
-                " then position_ids and seq_idx must also be provided."
+                "If (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k) corresponding to"
+                " multiple sequences are provided, then position_ids and seq_idx must also be given."
             )
         if seq_idx is not None and position_ids is None:
             raise ValueError("If seq_idx is provided, position_ids must also be provided.")
