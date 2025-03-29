@@ -1,3 +1,4 @@
+import os
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -15,6 +16,10 @@ Filter a datset by min token count and save to disk.
 https://github.com/foundation-model-stack/bamba/tree/main/training/data#training-on-your-own-data
 """
 
+CHAR_PER_TOKEN = 4
+BYTES_PER_TOKEN = 4
+BYTES_PER_MiB = 2**20
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -25,29 +30,30 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=str, default="ibm-ai-platform/Bamba-9B")
     parser.add_argument("--num-examples", type=int, default=None)
     parser.add_argument("--min_toks", type=int, default=8192)
-    parser.add_argument("--num-proc", type=int, default=8)
+    parser.add_argument("--num-proc", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--mib", type=int, default=128)
     args = parser.parse_args()
+    if args.num_proc is None:
+        args.num_proc = os.cpu_count() // 2
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
 
-    def get_toks(examples):
+    def map_fn(examples):
+        # Perform a rough filtering according to approx char count
+        filtered_text = [t for t in examples["text"] if len(t) // CHAR_PER_TOKEN > args.min_toks]
+        if not filtered_text:
+            return {"n_toks": [], "tokens": []}
         tokens = tokenizer(
-            examples["text"], truncation=False, padding=False, return_attention_mask=False, return_token_type_ids=False
+            filtered_text,
+            truncation=False,
+            padding=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
         )["input_ids"]
-        return tokens
-
-    def get_toks_dict(examples):
-        tokens = get_toks(examples)
-        n_toks = [len(ids) for ids in tokens]
-        return {"n_toks": n_toks, "tokens": tokens}
-
-    def get_filter_fn(min_toks: int):
-        def filter_fn(examples):
-            return [e > min_toks for e in examples["n_toks"]]
-
-        return filter_fn
+        tokens = [t for t in tokens if len(t) > args.min_toks]
+        n_toks = [len(t) for t in tokens]
+        return {"n_toks": np.array(n_toks), "tokens": tokens}
 
     dataset_names = args.dataset_names.split(",")
     for dataset_name in dataset_names:
@@ -62,21 +68,19 @@ if __name__ == "__main__":
             # Just for quick testing
             dataset = dataset.select(range(args.num_examples))
 
-        print(f"Num. examples, entire dataset: {len(dataset):.2E}")
+        print(f"Num. examples entire dataset: {len(dataset):.2E}")
 
         dataset = dataset.map(
-            get_toks_dict,
+            map_fn,
             batched=True,
             batch_size=args.batch_size,
             num_proc=args.num_proc,
             remove_columns=dataset.column_names,
         )
-        filter_fn = get_filter_fn(args.min_toks)
-        dataset = dataset.filter(filter_fn, batched=True, batch_size=args.batch_size, num_proc=args.num_proc)
 
-        print(f"Num. examples in min_toks: {len(dataset):.2E}")
-
-        n_toks = np.array(dataset["n_toks"]).sum()
+        print(f"Num. examples with min_toks>{args.min_toks}: {len(dataset):.2E}")
+        total_toks = sum(dataset["n_toks"])
+        print(f"Num. tokens (B) with min_toks>{args.min_toks}: {total_toks / 1e9}")
 
         save_file_dir = Path(
             "".join(char if char.isalnum() else "_" for char in args.dataset_path)
@@ -89,28 +93,31 @@ if __name__ == "__main__":
         # "tokens" is an arbitrary header. You can use any header, and simply update config.col_name above to match
         schema = pa.schema([pa.field("tokens", pa.uint32())])
 
-        tokens = dataset["tokens"]
-        n_toks = dataset["n_toks"]
-        total_bytes = 4 * sum(n_toks)
-        data_idx = 0
-        max_data_idx = len(tokens) - 1
+        max_bytes = BYTES_PER_MiB * args.mib
+        total_bytes = BYTES_PER_TOKEN * total_toks
+        n_expected_shards = (total_bytes + max_bytes - 1) // max_bytes
+        data_iter = dataset.iter(batch_size=1)
         shard_idx = 0
-        max_bytes = 2**20 * args.mib
-        with tqdm(total=total_bytes) as pbar:
-            while True:
+        done = False
+        with tqdm(total=n_expected_shards) as pbar:
+            while not done:
                 shard_filename = f"{shard_idx:05d}.arrow"
                 curr_bytes = 0
                 shard_idx += 1
                 with pa.ipc.new_file(save_file_dir.joinpath(shard_filename), schema) as writer:
-                    while data_idx <= max_data_idx and curr_bytes < max_bytes:
-                        writer.write(pa.record_batch([tokens[data_idx]], schema=schema))
-                        tok_bytes = 4 * n_toks[data_idx]
-                        curr_bytes += tok_bytes
-                        data_idx += 1
+                    while curr_bytes < max_bytes:
+                        try:
+                            data = next(data_iter)
+                        except StopIteration:
+                            pbar.update(1)
+                            done = True
+                            break
+                        tokens = data["tokens"]
+                        n_toks = data["n_toks"][0]
+                        writer.write(pa.record_batch(tokens, schema=schema))
+                        curr_bytes += BYTES_PER_TOKEN * n_toks
                         if curr_bytes >= max_bytes:
-                            pbar.update(curr_bytes)
-                    if data_idx > max_data_idx:
-                        break
+                            pbar.update(1)
 
-        with open(save_file_dir.joinpath("n_toks.txt"), "w") as f:
-            f.write(str(n_toks))
+        with open(save_file_dir.joinpath("total_toks.txt"), "w") as f:
+            f.write(str(total_toks))
