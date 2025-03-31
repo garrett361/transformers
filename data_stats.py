@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 
 from datasets import DownloadConfig, load_dataset
+
 from transformers import AutoTokenizer
 
 
@@ -17,9 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset-path", type=str, default="allenai/dolmino-mix-1124")
     parser.add_argument("--dataset-name", type=str, default="pes2o")
     parser.add_argument("--dataset-split", type=str, default="train")
-    parser.add_argument(
-        "--tokenizer", type=str, default="meta-llama/Llama-2-7b-chat-hf"
-    )
+    parser.add_argument("--tokenizer", type=str, default="ibm-ai-platform/Bamba-9B")
     parser.add_argument("--num-examples", type=int, default=None)
     args = parser.parse_args()
 
@@ -27,19 +26,17 @@ if __name__ == "__main__":
         args.dataset_path,
         args.dataset_name,
         split=args.dataset_split,
-        download_config=DownloadConfig(resume_download=True, num_procs=8),
+        download_config=DownloadConfig(resume_download=True, num_proc=8),
     )
     print(f"Num. examples, entire dataset: {len(dataset):.2E}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
     if args.num_examples is not None:
-        mapped_dataset = dataset.select(range(args.num_examples)).map(
+        mapped_dataset = dataset.select(range(len(dataset) - args.num_examples, len(dataset) - 1)).map(
             get_chars_toks_batched, batched=True, batch_size=8192
         )
     else:
-        mapped_dataset = dataset.map(
-            get_chars_toks_batched, batched=True, batch_size=8192
-        )
+        mapped_dataset = dataset.map(get_chars_toks_batched, batched=True, batch_size=8192)
     mapped_dataset.set_format("numpy")
     print(f"Num. examples analyzed: {len(mapped_dataset):.2E}")
 

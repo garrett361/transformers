@@ -16,6 +16,7 @@ Filter a datset by min token count and save to disk.
 https://github.com/foundation-model-stack/bamba/tree/main/training/data#training-on-your-own-data
 """
 
+# Actual chars per token is slightly higher, but we want to be conservative here.
 CHAR_PER_TOKEN = 4
 BYTES_PER_TOKEN = 4
 BYTES_PER_MiB = 2**20
@@ -30,6 +31,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=str, default="ibm-ai-platform/Bamba-9B")
     parser.add_argument("--num-examples", type=int, default=None)
     parser.add_argument("--min_toks", type=int, default=8192)
+    parser.add_argument("--max_toks", type=int, default=None)
     parser.add_argument("--num-proc", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--mib", type=int, default=128)
@@ -41,7 +43,10 @@ if __name__ == "__main__":
 
     def map_fn(examples):
         # Perform a rough filtering according to approx char count
-        filtered_text = [t for t in examples["text"] if len(t) // CHAR_PER_TOKEN > args.min_toks]
+        if args.max_toks is None:
+            filtered_text = [t for t in examples["text"] if len(t) // CHAR_PER_TOKEN >= args.min_toks]
+        else:
+            filtered_text = [t for t in examples["text"] if args.max_toks >= len(t) // CHAR_PER_TOKEN >= args.min_toks]
         if not filtered_text:
             return {"n_toks": [], "tokens": []}
         tokens = tokenizer(
@@ -53,7 +58,7 @@ if __name__ == "__main__":
         )["input_ids"]
         tokens = [t for t in tokens if len(t) > args.min_toks]
         n_toks = [len(t) for t in tokens]
-        return {"n_toks": np.array(n_toks), "tokens": tokens}
+        return {"n_toks": n_toks, "tokens": tokens}
 
     dataset_names = args.dataset_names.split(",")
     for dataset_name in dataset_names:
@@ -77,20 +82,28 @@ if __name__ == "__main__":
             num_proc=args.num_proc,
             remove_columns=dataset.column_names,
         )
-
-        print(f"Num. examples with min_toks>{args.min_toks}: {len(dataset):.2E}")
-        total_toks = sum(dataset["n_toks"])
-        print(f"Num. tokens (B) with min_toks>{args.min_toks}: {total_toks / 1e9}")
-
+        conds = f"toks >= {args.min_toks}"
+        if args.max_toks is not None:
+            conds = f"{args.max_toks} >= " + conds
+        print(f"Num. examples with {conds}: {len(dataset):.2E}")
+        n_toks_np = np.array(dataset["n_toks"])
+        total_toks = n_toks_np.sum().item()
+        print(f"Num. tokens (B) with {conds}: {total_toks / 1e9}")
+        cache_dir = os.getenv("HF_CACHE", "~/.cache/huggingface/datasets")
         save_file_dir = Path(
-            "".join(char if char.isalnum() else "_" for char in args.dataset_path)
-            + f"/min_toks_{args.min_toks}/"
+            cache_dir
+            + "".join(char if char.isalnum() else "_" for char in args.dataset_path)
+            + (
+                f"/min_toks_{args.min_toks}/"
+                if args.max_toks is None
+                else f"/min_toks_{args.min_toks}_max_toks_{args.max_toks}/"
+            )
             + "".join(char if char.isalnum() else "_" for char in dataset_name)
             + "/"
         )
         save_file_dir.mkdir(parents=True, exist_ok=True)
 
-        # "tokens" is an arbitrary header. You can use any header, and simply update config.col_name above to match
+        # "tokens" is expected by `fms-fsdp`.
         schema = pa.schema([pa.field("tokens", pa.uint32())])
 
         max_bytes = BYTES_PER_MiB * args.mib
@@ -119,5 +132,13 @@ if __name__ == "__main__":
                         if curr_bytes >= max_bytes:
                             pbar.update(1)
 
-        with open(save_file_dir.joinpath("total_toks.txt"), "w") as f:
-            f.write(str(total_toks))
+        with open(save_file_dir.joinpath("tokens_sum.txt"), "w") as f:
+            f.write(str(n_toks_np.sum().item()))
+        with open(save_file_dir.joinpath("tokens_mean.txt"), "w") as f:
+            f.write(str(n_toks_np.mean().item()))
+        with open(save_file_dir.joinpath("tokens_std.txt"), "w") as f:
+            f.write(str(n_toks_np.std().item()))
+        with open(save_file_dir.joinpath("tokens_median.txt"), "w") as f:
+            f.write(str(np.median(n_toks_np).item()))
+        with open(save_file_dir.joinpath("tokens_max.txt"), "w") as f:
+            f.write(str(n_toks_np.max().item()))
