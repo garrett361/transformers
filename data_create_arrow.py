@@ -56,7 +56,10 @@ if __name__ == "__main__":
             return_attention_mask=False,
             return_token_type_ids=False,
         )["input_ids"]
-        tokens = [t for t in tokens if len(t) > args.min_toks]
+        if args.max_toks is None:
+            tokens = [t for t in tokens if len(t) >= args.min_toks]
+        else:
+            tokens = [t for t in tokens if args.max_toks >= len(t) >= args.min_toks]
         n_toks = [len(t) for t in tokens]
         return {"n_toks": n_toks, "tokens": tokens}
 
@@ -89,7 +92,7 @@ if __name__ == "__main__":
         n_toks_np = np.array(dataset["n_toks"])
         total_toks = n_toks_np.sum().item()
         print(f"Num. tokens (B) with {conds}: {total_toks / 1e9}")
-        cache_dir = os.getenv("HF_CACHE", "~/.cache/huggingface/datasets")
+        cache_dir = os.getenv("HF_CACHE", "~/.cache/huggingface/datasets/")
         save_file_dir = Path(
             cache_dir
             + "".join(char if char.isalnum() else "_" for char in args.dataset_path)
@@ -100,11 +103,12 @@ if __name__ == "__main__":
             )
             + "".join(char if char.isalnum() else "_" for char in dataset_name)
             + "/"
-        )
+        ).expanduser()
         save_file_dir.mkdir(parents=True, exist_ok=True)
 
         # "tokens" is expected by `fms-fsdp`.
         schema = pa.schema([pa.field("tokens", pa.uint32())])
+        print(f"Writing to {save_file_dir=}")
 
         max_bytes = BYTES_PER_MiB * args.mib
         total_bytes = BYTES_PER_TOKEN * total_toks
