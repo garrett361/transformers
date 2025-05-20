@@ -38,8 +38,6 @@ class VideoLlavaConfig(PretrainedConfig):
         text_config (`Union[AutoConfig, dict]`, *optional*):
             The config object of the text backbone. Can be any of `LlamaConfig` or `MistralConfig`.
             Defaults to `LlamaConfig` if not indicated.
-        ignore_index (`int`, *optional*, defaults to -100):
-            The ignore index for the loss function.
         image_token_index (`int`, *optional*, defaults to 32000):
             The image token index to encode the image prompt.
         video_token_index (`int`, *optional*, defaults to 32001):
@@ -82,13 +80,16 @@ class VideoLlavaConfig(PretrainedConfig):
     ```"""
 
     model_type = "video_llava"
+    attribute_map = {
+        "image_token_id": "image_token_index",
+        "video_token_id": "video_token_index",
+    }
     sub_configs = {"text_config": AutoConfig, "vision_config": AutoConfig}
 
     def __init__(
         self,
         vision_config=None,
         text_config=None,
-        ignore_index=-100,
         image_token_index=32000,
         video_token_index=32001,
         projector_hidden_act="gelu",
@@ -99,7 +100,6 @@ class VideoLlavaConfig(PretrainedConfig):
         multimodal_projector_bias=True,
         **kwargs,
     ):
-        self.ignore_index = ignore_index
         self.image_token_index = image_token_index
         self.video_token_index = video_token_index
         self.projector_hidden_act = projector_hidden_act

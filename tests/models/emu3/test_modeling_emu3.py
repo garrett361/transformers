@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,9 +23,10 @@ from parameterized import parameterized
 
 from transformers import Emu3Config, Emu3TextConfig, is_torch_available, is_vision_available, set_seed
 from transformers.testing_utils import (
+    Expectations,
     require_bitsandbytes,
     require_torch,
-    require_torch_large_gpu,
+    require_torch_large_accelerator,
     slow,
     torch_device,
 )
@@ -46,6 +46,7 @@ if is_torch_available():
     from transformers import (
         Emu3ForCausalLM,
         Emu3ForConditionalGeneration,
+        Emu3Model,
         Emu3Processor,
         Emu3TextModel,
     )
@@ -124,7 +125,6 @@ class Emu3Text2TextModelTester:
 @require_torch
 class Emu3Text2TextModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
     all_model_classes = (Emu3ForCausalLM,) if is_torch_available() else ()
-    all_generative_model_classes = (Emu3ForCausalLM,) if is_torch_available() else ()
     pipeline_model_mapping = (
         {
             "text-generation": Emu3ForCausalLM,
@@ -167,7 +167,7 @@ class Emu3Text2TextModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTe
         # Dynamic scaling does not change the RoPE embeddings until it receives an input longer than the original
         # maximum sequence length, so the outputs for the short input should match.
         if scaling_type == "dynamic":
-            self.assertTrue(torch.allclose(original_short_output, scaled_short_output, atol=1e-5))
+            torch.testing.assert_close(original_short_output, scaled_short_output, rtol=1e-5, atol=1e-5)
         else:
             self.assertFalse(torch.allclose(original_short_output, scaled_short_output, atol=1e-5))
 
@@ -311,8 +311,14 @@ class Emu3Vision2TextModelTester:
 
 @require_torch
 class Emu3Vision2TextModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
-    all_model_classes = (Emu3ForConditionalGeneration,) if is_torch_available() else ()
-    all_generative_model_classes = (Emu3ForConditionalGeneration,) if is_torch_available() else ()
+    all_model_classes = (
+        (
+            Emu3Model,
+            Emu3ForConditionalGeneration,
+        )
+        if is_torch_available()
+        else ()
+    )
     pipeline_model_mapping = {}
     test_headmasking = False
     test_pruning = False
@@ -368,7 +374,7 @@ class Emu3Vision2TextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipeline
             with torch.no_grad():
                 out_ids = model(input_ids=input_ids, **inputs)[0]
                 out_embeds = model(inputs_embeds=inputs_embeds, **inputs)[0]
-            self.assertTrue(torch.allclose(out_embeds, out_ids))
+            torch.testing.assert_close(out_embeds, out_ids)
 
     @unittest.skip(
         "Emu3 has a VQ module that uses `weight.data` directly in forward which prevent offloding on that module"
@@ -388,10 +394,6 @@ class Emu3Vision2TextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipeline
     def test_cpu_offload(self):
         pass
 
-    @unittest.skip("Doesn't work, tensors are not almost same")  # TODO raushan fixme
-    def test_custom_4d_attention_mask(self):
-        pass
-
     @unittest.skip("VQ-VAE module doesn't initialize weights properly")
     def test_initialization(self):
         pass
@@ -399,6 +401,10 @@ class Emu3Vision2TextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipeline
     @pytest.mark.generate
     @unittest.skip("Emu3 has dynamic control flow in vision backbone")
     def test_generate_with_static_cache(self):
+        pass
+
+    @unittest.skip("Emu3 doesn't support Flex attn yet!")
+    def test_flex_attention_with_grads(self):
         pass
 
 
@@ -423,7 +429,7 @@ class Emu3IntegrationTest(unittest.TestCase):
 
     @slow
     @require_bitsandbytes
-    @require_torch_large_gpu
+    @require_torch_large_accelerator
     def test_model_generation_batched(self):
         model = Emu3ForConditionalGeneration.from_pretrained("BAAI/Emu3-Chat-hf", load_in_4bit=True)
         processor = Emu3Processor.from_pretrained("BAAI/Emu3-Chat-hf")
@@ -441,17 +447,27 @@ class Emu3IntegrationTest(unittest.TestCase):
         )
 
         # greedy generation outputs
-        EXPECTED_TEXT_COMPLETION = [
-            "USER: 64*64Describe what do you see here? ASSISTANT: The image depicts a black panther in a crouched position. The panther's body is elongated and curved, with its head lowered and ears pointed forward, suggesting alertness or focus.",
-            'USER: 64*64What can you say about the image? ASSISTANT: The image depicts a serene natural landscape. The foreground consists of a grassy area with some patches of bare earth. The middle ground shows a steep, reddish-brown cliff, which could be a'
-        ]  # fmt: skip
+        EXPECTED_TEXT_COMPLETIONS = Expectations(
+            {
+                ("xpu", 3): [
+                    "USER: 64*64Describe what do you see here? ASSISTANT: The image depicts a black panther in a crouched position. The panther's body is elongated and its head is lowered, suggesting a state of alertness or readiness. The animal's",
+                    "USER: 64*64What can you say about the image? ASSISTANT: The image depicts a serene natural landscape. The foreground consists of a grassy area with some patches of bare earth. The middle ground shows a gently sloping hill with a reddish-brown hue,",
+                ],
+                ("cuda", 7): [
+                    "USER: 64*64Describe what do you see here? ASSISTANT: The image depicts a black panther in a crouched position. The panther's body is elongated and curved, with its head lowered and ears pointed forward, suggesting alertness or focus.",
+                    "USER: 64*64What can you say about the image? ASSISTANT: The image depicts a serene natural landscape. The foreground consists of a grassy area with some patches of bare earth. The middle ground shows a steep, reddish-brown cliff, which could be a",
+                ],
+            }
+        )  # fmt: skip
+        EXPECTED_TEXT_COMPLETION = EXPECTED_TEXT_COMPLETIONS.get_expectation()
+
         generated_ids = model.generate(**inputs, max_new_tokens=40, do_sample=False)
         text = processor.batch_decode(generated_ids, skip_special_tokens=True)
         self.assertEqual(EXPECTED_TEXT_COMPLETION, text)
 
     @slow
     @require_bitsandbytes
-    @require_torch_large_gpu
+    @require_torch_large_accelerator
     def test_model_generation_multi_image(self):
         model = Emu3ForConditionalGeneration.from_pretrained("BAAI/Emu3-Chat-hf", load_in_4bit=True)
         processor = Emu3Processor.from_pretrained("BAAI/Emu3-Chat-hf")
@@ -463,14 +479,20 @@ class Emu3IntegrationTest(unittest.TestCase):
         inputs = processor(images=[image, image_2], text=prompt, return_tensors="pt").to(model.device, torch.float16)
 
         # greedy generation outputs
-        EXPECTED_TEXT_COMPLETION = ["USER: 64*6464*64What do these two images have in common? ASSISTANT: Both images feature a black animal, but they are not the same animal. The top image shows a close-up of a black cow's head, while the bottom image depicts a black cow in a natural"]  # fmt: skip
+        EXPECTED_TEXT_COMPLETIONS = Expectations(
+                {
+                    ("xpu", 3): ['USER: 64*6464*64What do these two images have in common? ASSISTANT: The two images both depict a rhinoceros, yet they are significantly different in terms of focus and clarity. The rhinoceros in the upper image is in sharp focus, showing detailed textures'],
+                    ("cuda", 7): ["USER: 64*6464*64What do these two images have in common? ASSISTANT: Both images feature a black animal, but they are not the same animal. The top image shows a close-up of a black cow's head, while the bottom image depicts a black cow in a natural"],
+                }
+            )  # fmt: skip
+        EXPECTED_TEXT_COMPLETION = EXPECTED_TEXT_COMPLETIONS.get_expectation()
         generated_ids = model.generate(**inputs, max_new_tokens=40, do_sample=False)
         text = processor.batch_decode(generated_ids, skip_special_tokens=True)
         self.assertEqual(EXPECTED_TEXT_COMPLETION, text)
 
     @slow
     @require_bitsandbytes
-    @require_torch_large_gpu
+    @require_torch_large_accelerator
     def test_model_generate_images(self):
         model = Emu3ForConditionalGeneration.from_pretrained("BAAI/Emu3-Gen-hf", load_in_4bit=True)
         processor = Emu3Processor.from_pretrained("BAAI/Emu3-Gen-hf")

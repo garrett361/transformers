@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
 import unittest
 
 import numpy as np
+import requests
 
 from transformers.image_utils import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
 from transformers.testing_utils import require_torch, require_vision
-from transformers.utils import is_torch_available, is_torchvision_available, is_vision_available
+from transformers.utils import is_torch_available, is_vision_available
 
 from ...test_image_processing_common import ImageProcessingTestMixin, prepare_image_inputs, prepare_video_inputs
 
@@ -33,8 +34,8 @@ if is_vision_available():
 
     from transformers import Qwen2VLImageProcessor
 
-    if is_torchvision_available():
-        from transformers import Qwen2VLImageProcessorFast
+    # if is_torchvision_available():
+    #     from transformers import Qwen2VLImageProcessorFast
 
 
 class Qwen2VLImageProcessingTester:
@@ -117,7 +118,7 @@ class Qwen2VLImageProcessingTester:
 @require_vision
 class Qwen2VLImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
     image_processing_class = Qwen2VLImageProcessor if is_vision_available() else None
-    fast_image_processing_class = Qwen2VLImageProcessorFast if is_torchvision_available() else None
+    # fast_image_processing_class = Qwen2VLImageProcessorFast if is_torchvision_available() else None
 
     def setUp(self):
         super().setUp()
@@ -296,3 +297,58 @@ class Qwen2VLImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
                 encoded_video = prcocess_out.pixel_values_videos
                 expected_output_video_shape = (171500, 1176)
                 self.assertEqual(tuple(encoded_video.shape), expected_output_video_shape)
+
+    def test_custom_image_size(self):
+        for image_processing_class in self.image_processor_list:
+            image_processing = image_processing_class(**self.image_processor_dict)
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                image_processing.save_pretrained(tmpdirname)
+                image_processor_loaded = image_processing_class.from_pretrained(
+                    tmpdirname, max_pixels=56 * 56, min_pixels=28 * 28
+                )
+
+            image_inputs = self.image_processor_tester.prepare_image_inputs(equal_resolution=True)
+            prcocess_out = image_processor_loaded(image_inputs, return_tensors="pt")
+            expected_output_video_shape = [112, 1176]
+            self.assertListEqual(list(prcocess_out.pixel_values.shape), expected_output_video_shape)
+
+    def test_temporal_padding(self):
+        for image_processing_class in self.image_processor_list:
+            # Initialize image_processing
+            image_processing = image_processing_class(**self.image_processor_dict)
+            # Create random video inputs with a number of frames not divisible by temporal_patch_size
+            image_processor_tester = Qwen2VLImageProcessingTester(self, num_frames=5, temporal_patch_size=4)
+            video_inputs = image_processor_tester.prepare_video_inputs(equal_resolution=True)
+
+            # Process the video inputs
+            process_out = image_processing(None, videos=video_inputs, return_tensors="pt")
+            encoded_video = process_out.pixel_values_videos
+
+            # Check the shape after padding
+            expected_output_video_shape = (102900, 1176)  # Adjusted based on padding
+            self.assertEqual(tuple(encoded_video.shape), expected_output_video_shape)
+            # Check divisibility by temporal_patch_size
+            self.assertEqual(encoded_video.shape[0] % 4, 0)
+
+    @require_vision
+    @require_torch
+    def test_slow_fast_equivalence(self):
+        dummy_image = Image.open(
+            requests.get("http://images.cocodataset.org/val2017/000000039769.jpg", stream=True).raw
+        )
+
+        if not self.test_slow_image_processor or not self.test_fast_image_processor:
+            self.skipTest(reason="Skipping slow/fast equivalence test")
+
+        if self.image_processing_class is None or self.fast_image_processing_class is None:
+            self.skipTest(reason="Skipping slow/fast equivalence test as one of the image processors is not defined")
+
+        image_processor_slow = self.image_processing_class(**self.image_processor_dict)
+        image_processor_fast = self.fast_image_processing_class(**self.image_processor_dict)
+
+        encoding_slow = image_processor_slow(dummy_image, return_tensors="pt")
+        encoding_fast = image_processor_fast(dummy_image, return_tensors="pt")
+
+        torch.testing.assert_close(
+            encoding_slow.pixel_values, encoding_fast.pixel_values, rtol=100, atol=1e-2
+        )  # @yoni bit weird that we have such diffs

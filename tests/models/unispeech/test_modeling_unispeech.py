@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2021 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -597,4 +596,4 @@ class UniSpeechModelIntegrationTest(unittest.TestCase):
         )
         # fmt: on
 
-        self.assertTrue(torch.allclose(cosine_sim[:, :5], expected_cosine_sim_slice, atol=1e-3))
+        torch.testing.assert_close(cosine_sim[:, :5], expected_cosine_sim_slice, rtol=1e-3, atol=1e-3)
